@@ -2,7 +2,7 @@ import os
 import torch
 import pickle  
 import numpy as np
-
+# import pdb
 from functools import partial
 from numpy.random import uniform
 from multiprocessing import Process, Manager  
@@ -103,23 +103,26 @@ class MyCollator(object):
         new_batch = []
         for token in batch:
             aa, b, c = token
-            len_crop = np.random.randint(self.min_len_seq, self.max_len_seq+1, size=2) # 1.5s ~ 3s
-            left = np.random.randint(0, len(aa)-len_crop[0], size=2)
-            pdb.set_trace()
+            # Choose a random crop length between min and max.
+            crop_length = np.random.randint(self.min_len_seq, self.max_len_seq + 1)
+            # If the available sequence is too short, use the whole sequence.
+            if len(aa) <= crop_length:
+                left = 0
+                crop_length = len(aa)
+            else:
+                left = np.random.randint(0, len(aa) - crop_length)
             
-            a = aa[left[0]:left[0]+len_crop[0], :]
-            c = c[left[0]:left[0]+len_crop[0]]
+            a = aa[left:left+crop_length, :]
+            c_crop = c[left:left+crop_length]
             
             a = np.clip(a, 0, 1)
+            a_pad = np.pad(a, ((0, self.max_len_pad - a.shape[0]), (0, 0)), 'constant')
+            c_pad = np.pad(c_crop[:, np.newaxis], ((0, self.max_len_pad - c_crop.shape[0]), (0, 0)),
+                           'constant', constant_values=-1e10)
             
-            a_pad = np.pad(a, ((0,self.max_len_pad-a.shape[0]),(0,0)), 'constant')
-            c_pad = np.pad(c[:,np.newaxis], ((0,self.max_len_pad-c.shape[0]),(0,0)), 'constant', constant_values=-1e10)
+            new_batch.append((a_pad, b, c_pad, crop_length))
             
-            new_batch.append( (a_pad, b, c_pad, len_crop[0]) ) 
-            
-        batch = new_batch  
-        
-        a, b, c, d = zip(*batch)
+        a, b, c, d = zip(*new_batch)
         melsp = torch.from_numpy(np.stack(a, axis=0))
         spk_emb = torch.from_numpy(np.stack(b, axis=0))
         pitch = torch.from_numpy(np.stack(c, axis=0))

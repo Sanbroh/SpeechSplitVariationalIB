@@ -50,8 +50,8 @@ if __name__ == '__main__':
 
     # Directories.
     parser.add_argument('--log_dir', type=str, default='run/logs')
-    parser.add_argument('--model_save_dir', type=str, default='run/models_800k_IB123_NEW_B50')
-    parser.add_argument('--sample_dir', type=str, default='run/samples_800k_IB123_NEW_B50')
+    parser.add_argument('--model_save_dir', type=str, default='run/models_800k_IB123_NEW_A1_B50-0.01')
+    parser.add_argument('--sample_dir', type=str, default='run/samples_800k_IB123_NEW_A1_B50-0.01')
 
     # Step size.
     parser.add_argument('--log_step', type=int, default=10)

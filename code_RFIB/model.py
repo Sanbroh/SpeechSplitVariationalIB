@@ -254,7 +254,58 @@ class Decoder_3(nn.Module):
 
         return decoder_output          
     
-    
+class Decoder_FAIR(nn.Module):
+    """Decoder module RFIB FAIR with fairness conditioning.
+       This decoder concatenates the sensitive attribute (s) to the input.
+       In fairface mode, s is assumed to be categorical (3 classes) and is one-hot encoded.
+    """
+    def __init__(self, hparams, is_fairface=False):
+        super().__init__()
+        self.is_fairface = is_fairface
+
+        # Base input dimension as in the original Decoder_FAIR:
+        # dim_neck*2 + dim_neck_2*2 + dim_neck_3*2 + dim_emb.
+        base_input_dim = (hparams.dim_neck * 2 +
+                          hparams.dim_neck_2 * 2 +
+                          hparams.dim_neck_3 * 2 +
+                          hparams.dim_spk_emb)
+        
+        # If fairness conditioning is enabled, add extra dimensions for s.
+        extra_dim = 3 if self.is_fairface else 1
+        self.input_dim = base_input_dim + extra_dim
+
+        # Update the LSTM to take the larger input dimension.
+        self.lstm = nn.LSTM(self.input_dim, 
+                            512, 
+                            3, 
+                            batch_first=True, 
+                            bidirectional=True)
+        
+        self.linear_projection = LinearNorm(1024, hparams.dim_freq)
+
+    def forward(self, x, s):
+        """
+        x: Tensor of shape [batch, time, features] from the encoder/previous module.
+        s: Sensitive attribute. If is_fairface==True, s is assumed to be a class label (integer)
+           and will be converted to a one-hot vector; otherwise, s is a continuous or single-value attribute.
+        """
+        if self.is_fairface:
+            # Ensure s has shape [batch, 1] and convert to int.
+            s = s.view(-1, 1).to(torch.int64)
+            one_hot = F.one_hot(s, num_classes=3).squeeze(1)  # shape: [batch, 3]
+            # Expand one_hot along the time dimension.
+            one_hot_exp = one_hot.unsqueeze(1).expand(x.size(0), x.size(1), one_hot.size(-1))
+            # Concatenate the one-hot sensitive attribute with the input.
+            x = torch.cat((x, one_hot_exp), dim=-1)
+        else:
+            # For continuous or binary sensitive attributes.
+            s = s.view(-1, 1)  # shape: [batch, 1]
+            s_exp = s.unsqueeze(1).expand(x.size(0), x.size(1), 1)
+            x = torch.cat((x, s_exp), dim=-1)
+            
+        outputs, _ = self.lstm(x)
+        decoder_output = self.linear_projection(outputs)
+        return decoder_output
     
 class Decoder_4(nn.Module):
     """For F0 converter
@@ -281,7 +332,7 @@ class Decoder_4(nn.Module):
     
 
 class Generator_3(nn.Module):
-    """SpeechSplit model"""
+    """SpeechSplit model + IB"""
     def __init__(self, hparams):
         super().__init__()
         
@@ -334,7 +385,61 @@ class Generator_3(nn.Module):
         
         return codes_2
 
+class Generator_3_RFIB(nn.Module):
+    """SpeechSplit model + FAIR RFIB"""
+    def __init__(self, hparams):
+        super().__init__()
+        
+        self.encoder_1 = Encoder_7(hparams)
+        self.encoder_2 = Encoder_t(hparams)
+        self.decoder = Decoder_3(hparams)
+        self.decoder_fair = Decoder_FAIR(hparams)
     
+        self.freq = hparams.freq
+        self.freq_2 = hparams.freq_2
+        self.freq_3 = hparams.freq_3
+
+        # IB Modifications (1 = Rhythm, 2 = Pitch, 3 = Content)
+        dim_1 = 164
+        dim_2 = dim_1
+        self.mu_linear = nn.Linear(dim_1, dim_2)
+        self.logvar_linear = nn.Linear(dim_1, dim_2)
+
+    def forward(self, x_f0, x_org, c_trg, s):
+        
+        x_1 = x_f0.transpose(2,1)
+        codes_x, codes_f0 = self.encoder_1(x_1)
+        code_exp_1 = codes_x.repeat_interleave(self.freq, dim=1)
+        code_exp_3 = codes_f0.repeat_interleave(self.freq_3, dim=1)
+        
+        x_2 = x_org.transpose(2,1)
+        codes_2 = self.encoder_2(x_2, None)
+        code_exp_2 = codes_2.repeat_interleave(self.freq_2, dim=1)
+        
+        encoder_outputs = torch.cat((code_exp_1, code_exp_2, code_exp_3, 
+                                     c_trg.unsqueeze(1).expand(-1,x_1.size(-1),-1)), dim=-1)
+        
+        mel_outputs = self.decoder(encoder_outputs)
+        mel_outputs_fair = self.decoder_fair(encoder_outputs, s)
+
+        # IB Modifications
+        rep = encoder_outputs
+        mu = self.mu_linear(rep)
+        var = self.logvar_linear(rep)
+
+        var = torch.nn.functional.sigmoid(var)
+
+        var = torch.nan_to_num(var)
+        mu = torch.nan_to_num(mu)
+        
+        return mel_outputs, mel_outputs_fair, var, mu
+    
+    
+    def rhythm(self, x_org):
+        x_2 = x_org.transpose(2,1)
+        codes_2 = self.encoder_2(x_2, None)
+        
+        return codes_2
     
 class Generator_6(nn.Module):
     """F0 converter
